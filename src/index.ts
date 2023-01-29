@@ -1,22 +1,21 @@
-import { threadId } from "worker_threads"
-
 type Stack = 'Draw' | 'Discard' | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 'WinS' | 'WinH' | 'WinC' | 'WinD'
 type StackType = 'Cycle' | 'Center' | 'Win'
 type Board = { [key in Stack]: GameCard[] }
 type SuitName = 'Spades' | 'Hearts' | 'Clubs' | 'Diamonds'
 type SuitColor = 'Black' | 'Red'
 type RankName = 'Ace' | 'Two' | 'Three' | 'Four' | 'Five' | 'Six' | 'Seven' | 'Eight' | 'Nine' | 'Ten' | 'Jack' | 'Queen' | 'King'
-type MoveFilter = 'None' | 'CenterOnly' | 'WinOnly'
+type TargetType = 'Both' | 'Center' | 'Win'
+type MoveType = 'Center' | 'Win'
 
 const assetDir = './assets'
 const imgPath = `${assetDir}/images`
 const iconPath = `${assetDir}/icons`
 
 class Suit {
-	name: SuitName
-	color: SuitColor
-	index: number
-	icon: string
+	private name: SuitName
+	private color: SuitColor
+	private index: number
+	private icon: string
 
 	constructor(name: SuitName, color: SuitColor, index: number) {
 		this.name = name
@@ -40,9 +39,9 @@ class Suit {
 }
 
 class Rank {
-	name: string
-	value: number
-	strValue: string
+	private name: string
+	private value: number
+	private strValue: string
 
 	constructor(name: RankName, value: number) {
 		this.name = name
@@ -112,7 +111,7 @@ class Card {
 	get getRank() {
 		return this.rank
 	}
-	get getId() {
+	get getCardId() {
 		return this.suit.getName[0] + this.rank.getStrValue
 	}
 	get print() {
@@ -120,18 +119,61 @@ class Card {
 	}
 
 	matches(otherCard: Card) {
-		return this.rank.getValue === otherCard.rank.getValue && this.suit.getIndex === this.suit.getIndex
+		return this.rank.getValue === otherCard.getRank.getValue && this.suit.getIndex === otherCard.getSuit.getIndex
 	}
 }
 
+class MoveMap {
+	private map: Map<string, Set<Move[]>>
+
+	constructor() {
+		this.map = new Map<string, Set<Move[]>>()
+	}
+
+	create(card: GameCard) {
+		const key = card.getId(true)
+		this.map.set(key, new Set())
+		return this.map.get(key)
+	}
+	add(card: GameCard, moves: Move[]=[]) {
+		const key = card.getId(true)
+		this.map.get(key)?.add(moves)
+	}
+	get(card: GameCard) {
+		const key = card.getId(true)
+		const values = this.map.get(key) ?? null
+		if (values === null) return null
+		return Array.from(values.values()) ?? null
+	}
+	getTargetStacks(card: GameCard) {
+		const values = this.get(card)
+		if (values === null) return null
+		return values.map((moves) => moves[moves.length - 1].newStack)
+	}
+	exists(card: GameCard) {
+		const key = card.getId(true)
+		return this.map.get(key) !== undefined
+	}
+	print() {
+		let fmt = 'Possible Moves:\n'
+		for (const [card, set] of this.map.entries()) {
+			const fmtSet =
+			fmt += `${card} => [\n${Array.from(set.values()).map((moves) => {
+				return `\t${moves.map((move) => `${move.targetCard?.getId(true) ?? 'Blank'} (${move.newStack})`).join(' -> ')}\n`
+			})}]\n`
+		}
+		console.log(fmt)
+	}
+} 
+
 class GameCard extends Card {
-	stack: Stack
-	stackType: StackType = 'Cycle'
-	facedown: boolean
-	movable: boolean
-	facedownBelow: boolean
-	blankBelow: boolean
-	nothingAbove: boolean
+	private stack: Stack
+	private stackType: StackType = 'Cycle'
+	private facedown: boolean
+	private movable: boolean
+	private facedownBelow: boolean
+	private blankBelow: boolean
+	private nothingAbove: boolean
 
 	constructor(suit: Suit, rank: Rank, stack: Stack='Draw', facedown: boolean=true, movable: boolean=true,
 				facedownBelow: boolean=false, blankBelow: boolean=false, nothingAbove: boolean=false) {
@@ -166,8 +208,8 @@ class GameCard extends Card {
 	get hasNothingAbove() {
 		return this.nothingAbove
 	}
-	get getId() {
-		return this.facedown ? `[${super.getId}]` : super.getId
+	get winStack() {
+		return `Win${this.suit.getName[0]}` as Stack
 	}
 	get print() {
 		return `${super.print} (${this.stack})`
@@ -193,26 +235,40 @@ class GameCard extends Card {
 		this.nothingAbove = nothingAbove
 	}
 
+	getId(ignoreFacedown: boolean=false) {
+		return !ignoreFacedown && this.facedown ? `[${super.getCardId}]` : super.getCardId
+	}
 	flip() {
 		this.facedown = !this.facedown
+	}
+	isWinTarget(target: GameCard) {
+		if (this.rank.getValue === 1) return false
+		return target.getRank.getValue === this.rank.getValue - 1 && target.getSuit.getIndex === this.suit.getIndex 
+	}
+	isStackTarget(target: GameCard) {
+		if (this.rank.getValue === 13) return false
+		return target.getSuit.getColor !== this.suit.getColor && target.getRank.getValue - 1 === this.rank.getValue
+	}
+	isInSameStack(target: GameCard) {
+		return target.getStack === this.stack
 	}
 }
 
 interface MoveSearchOptions {
 	cards: GameCard[],
-	filter: MoveFilter,
-	empty: boolean,
+	filter: TargetType,
+	canEmptyPile: boolean,
 }
 
 class Game {
 	name: string
 	board: Board
-	possibleMoves: Move[][]
+	limit = 15
+	count = 0
 
 	constructor(name: string) {
 		this.name = name
 		this.board = this.newBoard()
-		this.possibleMoves = []
 	}
 
 	newBoard() {
@@ -257,21 +313,26 @@ class Game {
 		}
 	}
 
-	printBoard(board: Board=this.board, log: boolean=true, stringify: boolean=false) {
+	printBoard(board: Board, log: boolean=true, stringify: boolean=false) {
 		let result
 		if (stringify) {
-			result = Object.values(this.board).reduce((prevCards: [number, number][], cards: GameCard[]) => {
+			result = Object.values(board).reduce((prevCards: [number, number][], cards: GameCard[]) => {
 				return [...prevCards, ...cards.map((card) => [card.getSuit.getIndex, card.getRank.getValue - 1] as [number, number])]
 			}, [])
 			log ? console.log(result) : {}
 			return result
 		}
 		result = `${this.name}\n`
-		for (const [stack, cards] of Object.entries(this.board)) {
-			result += `${stack}: ${cards.map((card) => card.getId).join(' ')}\n`
+		for (const [stack, cards] of Object.entries(board)) {
+			result += `${stack}: ${cards.map((card) => card.getId()).join(' ')}\n`
 		}
 		log ? console.log(result) : {}
 		return result
+	}
+	printMoves(moves: Move[][]) {
+		moves.forEach((moves) => {
+			console.log(moves.map(move => move.print()).join(' -> '))
+		})
 	}
 
 	getStackType(card: GameCard): StackType {
@@ -279,158 +340,256 @@ class Game {
 		if (!isNaN(parseInt((card.getStack as string)))) return 'Center'
 		return 'Cycle'
 	}
-
-	evaluateBoard() {
-		this.possibleMoves = []
-		const cards = Object.values(this.board).reduce((prev: GameCard[], cards) => [...prev, ...cards], [])
-		const criticalCards = cards.filter((card) => card.getStackType === 'Center' && card.facedownBelow && !card.facedown)
-		const validTargets = cards.filter((card) => card.getStackType !== 'Cycle' && card.hasNothingAbove)
+	evaluateBoard(board: Board): boolean {
+		const cards = Object.values(board).reduce((prev: GameCard[], cards) => [...prev, ...cards], [])
+		const criticalCards = cards.filter((card) => card.getStackType === 'Center' && (card.hasFacedownBelow || card.hasBlankBelow) && !card.isFacedown)
+		const validMoves: Move[][] = [] 
+		console.log(criticalCards.map(card => card.getId()))
 		for (const critCard of criticalCards) {
-			const options: MoveSearchOptions = {
-				cards: cards,
-				filter: 'None',
-				empty: true
-			}
-			this.possibleMoves.push(...this.getMovesForCard(critCard, validTargets, options).map(({ moves }) => moves))
+			this.getMoves(critCard, 'Both', cards, board)
 		}
-		this.possibleMoves.sort((a, b) => b.length - a.length)
-		// console.log(this.possibleMoves.map((moves) => moves.map(move => move.print()).join(' -> ')))
-		this.makeNextMove(this.possibleMoves[this.possibleMoves.length - 1])
+		validMoves.sort((a, b) => b.length - a.length)
+		this.possibleMoves.print()
+		let positionIsWon = false
+		
+		// while (possibleMoves.length > 0 && !positionIsWon && this.count < this.limit) {
+		// 	const newBoard = this.makeMoves(board, possibleMoves.splice(0, 1)[0])
+		// 	if (this.getFacedownCardCount(newBoard)) {
+		// 		positionIsWon = true
+		// 	}
+		// 	this.count++
+		// 	positionIsWon = this.evaluateBoard(newBoard)
+		// }
+		return positionIsWon // No more moves remaining, backtrack
 	}
-	makeNextMove(moves: Move[]): boolean {
-		if (moves.length === 0) return false
 
-		console.log(moves.map(move => move.print()).join(' -> '))
-		const newBoard = moves[0].makeMove(this.board)
-		this.updateStack(newBoard, moves[0].newStack!)
-		this.updateStack(newBoard, moves[0].oldStack)
-		this.printBoard(newBoard)
-		return truefilter
+	getEmptyPiles(board: Board): Stack[] {
+		const centerPiles = (Object.keys(board) as Stack[]).filter((stack) => getStackType(stack as Stack) === 'Center')
+		return centerPiles.filter((stack) => board[stack].length === 0) // center piles with no cards
 	}
-	getCriticalCardCount(board: Board) {
-		return Object.entries(board).reduce((prev: GameCard[], [stack, cards]) => {
-			if (stack as Stack === 'Discard' || stack as Stack === 'Draw') return [...prev]
-			return [...prev, cards.filter((card) => card.isFacedown)]
-		}, [] as GameCard[]).length
+	getZeroFacedownCenterPiles(board: Board): Stack[] {
+		const centerPiles = (Object.keys(board) as Stack[]).filter((stack) => getStackType(stack as Stack) === 'Center')
+		return centerPiles.filter((stack) => board[stack].length > 0 && board[stack].every(card => !card.isFacedown)) // center piles with cards, but no facedown cards
 	}
+	
+	possibleMoves: MoveMap = new MoveMap()
+
+	// move to Turn class
+	getMoves(card: GameCard, targetType: TargetType='Both', cards: GameCard[], board: Board, ): Stack[] | null {
+		this.possibleMoves.create(card)
+		if (!card.isMovable) return null
+		if (card.getRank.getValue === 1) {
+			this.possibleMoves.add(card, [new Move(card, null, card.winStack)])
+			return [card.winStack]
+		}
+		const stacks: Stack[] = []
+		if (card.getRank.getValue === 13) {
+			stacks.push(...this.getEmptyPiles(board))
+			for (const emptyPile of this.getEmptyPiles(board)) {
+				this.possibleMoves.add(card, [new Move(card, null, emptyPile)])
+			}
+			// zero-facedown center piles
+		}
+		console.log(card.getId())
+		const isTargetable = (target: GameCard) => target.getStackType === 'Cycle' || !card.isInSameStack(target)
+		const winTargets: GameCard[] = cards.filter((target) => isTargetable(target) && card.isWinTarget(target))
+		const stackTargets: GameCard[] = cards.filter((target) => isTargetable(target) && card.isStackTarget(target))
+		for (const target of [...stackTargets, ...winTargets]) {
+			const moves: Move[][] = []
+			if (target.hasNothingAbove) {
+				moves.push([new Move(card, target, target.getStack)])
+				stacks.push(target.getStack)
+			}
+			let results: Stack[] | null
+			if (this.possibleMoves.exists(target)) {
+				results = this.possibleMoves.getTargetStacks(target) ?? []
+			} else {
+				results = this.getMoves(target, targetType, cards, board)
+			}
+			if (results === null) continue
+			if (results.length === 0) continue
+			const targetMoves: Move[][] | null = this.possibleMoves.get(target)
+			if (targetMoves === null) continue
+			if (targetMoves.length === 0) continue
+			for (const targetMoveChain of targetMoves) {
+				console.log(target.getId(), targetMoveChain)
+				const lastMoveInChain = targetMoveChain[targetMoveChain.length - 1]
+				if (lastMoveInChain.moveType === targetType) {
+					moves.push([...targetMoveChain, new Move(card, target, targetMoveChain[targetMoveChain.length - 1].newStack)])
+					stacks.push(lastMoveInChain.newStack)
+				}
+			}
+			this.possibleMoves.add(card, ...moves)
+		}
+		return stacks.length > 0 ? stacks : null
+	} 
 
 	// critCard: the card that needs to be moved
 	// validTargets: the possible cards that can be moved to on this turn
-	getMovesForCard(critCard: GameCard, validTargets: GameCard[], options: MoveSearchOptions):  { moves: Move[], targetStack: Stack | null }[] {
+	getMovesForCard(board: Board, critCard: GameCard, validTargets: GameCard[], options: MoveSearchOptions, searched: GameCard[]=[]):  { moves: Move[], targetStack: Stack | null }[] {
 		let newStack: Stack | null = null
 		if (critCard.getRank.getValue === 1) {
 			newStack = `Win${critCard.getSuit.getName[0]}` as Stack
 			return [{ moves: [new Move(critCard, null, newStack)], targetStack: newStack }]
 		}
 		const moves: { moves: Move[], targetStack: Stack | null }[] = []
-		const { cards, filter, empty } = options
+		const { cards, filter, canEmptyPile } = options
 		if (critCard.getRank.getValue === 13) { // if card is King
-			const centerPiles = Object.keys(this.board).filter((stack) => critCard.getStack && !isNaN(parseInt(stack)))
-			const emptyPiles = centerPiles.filter((stack) => stack != critCard.getStack && this.board[stack as Stack].length === 0) // find empty spaces
+			const centerPiles = Object.keys(board).filter((stack) => getStackType(stack as Stack) === 'Center')
+			const emptyPiles = centerPiles.filter((stack) => stack !== critCard.getStack && board[stack as Stack].length === 0) // find empty spaces
 			if (emptyPiles.length > 0) return emptyPiles.map((stack) => {
 				return { moves: [new Move(critCard, null, stack as Stack)], targetStack: stack as Stack }
 			})
-			if (empty) {
-				const cleanPiles = centerPiles.filter((stack) => this.board[stack as Stack].every(card => !card.facedown)) // find center piles with no facedown cards
-				if (cleanPiles.length > 0) {
-					for (const stack of cleanPiles) {
-						const newOptions = {...options}
-						newOptions.empty = false
-						const results = this.getMovesForCard(this.board[stack as Stack][0], validTargets, newOptions) // recurse and attempt to clear piles
-						if (results.length > 0) moves.push(...results.map(({ moves, targetStack }) => {
-							return { moves: [...moves, new Move(critCard, null, stack as Stack)], targetStack: targetStack }
-						}))
-					}
-				}
+			const cleanPiles = centerPiles.filter((stack) => board[stack as Stack].every(card => !card.isFacedown)) // find center piles with no facedown cards
+			if (!canEmptyPile || cleanPiles.length === 0) return moves 
+			for (const stack of cleanPiles) {
+				const newOptions = {...options}
+				newOptions.canEmptyPile = false
+				const results = this.getMovesForCard(board, board[stack as Stack][0], validTargets, newOptions, [...searched, critCard]) // recurse and attempt to clear piles
+				moves.push(...results.map(({ moves }) => { return { moves: [...moves, new Move(critCard, null, stack as Stack)], targetStack: stack as Stack }}))
 			}
 			return moves
 		}
-		if (!critCard.isMovable && critCard.stackType !== 'Win') return [] // if card is not movable or in win, return invalid
-		const requiredValidTargets = this.evaluateTargets(critCard, validTargets)
+
+		if (!critCard.isMovable) return [] // if card is not movable return invalid
+		const newOptions = {...options}
+
+		const requiredValidTargets = validTargets.filter((target) => {
+			if (critCard.getStack === target.getStack) return false
+			if (filter !== 'Center' && target.getStackType === 'Win') return critCard.isWinTarget(target)			
+			if (filter !== 'Win' && target.getStackType === 'Center') return critCard.isStackTarget(target)			
+			return false
+		})
 		if (requiredValidTargets.length > 0) { // if required card is valid target
 			return requiredValidTargets.map((target) => {
-				newStack = target.stack
+				newStack = target.getStack
 				return { moves: [new Move(critCard, target, newStack)], targetStack: newStack }
 			})
 		}
-		if (filter !== 'CenterOnly') {
-			const winTargets = cards.filter((card) => {
-				return card.getRank.getValue === critCard.getRank.getValue - 1 && card.getSuit.getIndex === critCard.getSuit.getIndex
-			})
-			for (const target of winTargets) {
-				if (target.isMovable) {
-					const newOptions = {...options}
-					newOptions.filter = 'WinOnly'
-					const results = this.getMovesForCard(target, validTargets, newOptions) // recurse and attempt to clear piles
-					if (results.length > 0) moves.push(...results.map(({ moves, targetStack }) => {
-						return { moves: [...moves, new Move(critCard, target, targetStack ?? target.stack as Stack)], targetStack: targetStack }
-					}))
-				}
-			}
+
+		const stackTargets = []
+		const winTargets = []
+		const isTargetable = (card: GameCard) => {
+			const hasNotBeenSearched = (searched.find((otherCard) => card.matches(otherCard)) ?? null) === null
+			const notInSameStack = (!critCard.isInSameStack(card) || card.getStackType === 'Cycle')
+			return hasNotBeenSearched && card.isMovable && notInSameStack
 		}
-		if (filter !== 'WinOnly') {
-			const stackTargets = cards.filter((card) => {
-				return card.getRank.getValue - 1 === critCard.getRank.getValue && card.getSuit.getColor !== critCard.getSuit.getColor
-			})
-			for (const target of stackTargets) {
-				if (target.isMovable) {
-					const newOptions = {...options}
-					newOptions.filter = 'CenterOnly'
-					const results = this.getMovesForCard(target, validTargets, newOptions) // recurse and attempt to clear piles
-					if (results.length > 0) moves.push(...results.map(({ moves, targetStack }) => {
-						return { moves: [...moves, new Move(critCard, target, targetStack ?? target.stack as Stack)], targetStack: targetStack }
-					}))
+		if (filter !== 'Center') winTargets.push(...cards.filter((card) => isTargetable(card) && critCard.isWinTarget(card)))
+		if (filter !== 'Win') stackTargets.push(...cards.filter((card) => isTargetable(card) && critCard.isStackTarget(card)))
+		const newTargets: [TargetType, GameCard][] = []
+		newTargets.push(...stackTargets.map((target) => ['CenterOnly' as TargetType, target] as [TargetType, GameCard]))
+		newTargets.push(...winTargets.map((target) => ['WinOnly' as TargetType, target] as [TargetType, GameCard]))
+
+		for (const [newFilter, newTarget] of newTargets) {
+			const clearingMoves: Move[][] = []
+			if (!newTarget.hasNothingAbove && newTarget.getStackType !== 'Cycle') {
+				const cardAboveIndex = board[newTarget.getStack].indexOf(newTarget) + 1
+				const cardAbove = board[newTarget.getStack][cardAboveIndex]
+				newOptions.filter = cardAboveIndex === board[newTarget.getStack].length - 1 ? 'Both' : 'Center'
+				const results = this.getMovesForCard(board, cardAbove, validTargets, newOptions, [...searched, critCard])
+				if (results.length === 0) continue
+				clearingMoves.push(...results.map(({ moves }) => moves))
+			}
+			newOptions.filter = newFilter
+			let results = this.getMovesForCard(board, newTarget, validTargets, newOptions, [...searched, critCard]) // recurse and attempt to clear piles
+			if (clearingMoves.length > 0) {
+				let newResults: { moves: Move[], targetStack: Stack | null }[] = []
+				for (const { moves: result, targetStack } of results) {
+					for (const clearMoves of clearingMoves) {
+						newResults.push({ moves: [...clearMoves, ...result], targetStack: targetStack })
+					}
 				}
+				results = newResults
+			} else {
+				moves.push(...results.map(({ moves, targetStack }) => {
+					return { moves: [...moves, new Move(critCard, newTarget, targetStack ?? newTarget.getStack as Stack)], targetStack: targetStack }
+				}))
 			}
 		}
 		return moves
 	}
-
-	evaluateTargets(card: GameCard, validTargets: GameCard[]) {
-		return validTargets.filter((target) => {
-			if (card.getStack === target.getStack) return false
-			if (target.stackType === 'Win') {
-				return target.getSuit.getIndex === card.getSuit.getIndex && target.getRank.getValue === card.getRank.getValue - 1
+	
+	makeMoves(oldBoard: Board, moves: Move[]): Board {
+		const newBoard = {...oldBoard}
+		this.printMoves([moves])
+		for (const move of moves) {
+			if (move.newStack !== null) {
+				move.makeMove(newBoard)
+				this.updateStack(newBoard, move.oldStack)
+				this.updateStack(newBoard, move.newStack)
 			}
-			return target.getSuit.getColor !== card.getSuit.getColor && target.getRank.getValue - 1 === card.getRank.getValue
-		})
+		}
+		this.printBoard(newBoard)
+		return newBoard
 	}
+
 	updateStack(board: Board, stack: Stack) {
-		const cards = board[stack]
-		if (stack === 'Discard' || stack === 'Draw') return
-		for (const [i, card] of cards.entries()) {
-			card.setNothingAbove(i === cards.length - 1)
+		const stackType = getStackType(stack)
+		if (stackType === 'Cycle' || board[stack].length === 0) return
+		for (const [i, card] of board[stack].entries()) {
+			const isInWin = stackType === 'Win'
+			const isOnTop = i === board[stack].length - 1
+			const isOnBottom = i === 0
+			!isInWin && isOnTop && card.isFacedown ? card.flip() : {}
+			card.setMovable((!isInWin && !card.isFacedown) || (isInWin && isOnTop))
+			card.setNothingAbove(isOnTop)
+			card.setBlankBelow(!isInWin && isOnBottom)
+			card.setFacedownBelow(!isInWin && !isOnBottom ? board[stack][i - 1].isFacedown : false)
 		}
 	}
+
+	getFacedownCardCount(board: Board): number {
+		return Object.entries(board).reduce((count: number, [stack, cards]) => {
+			if (stack === 'Draw' || stack === 'Discard' || stack.startsWith('Win')) return count
+			return count + cards.filter((card) => card.isFacedown).length
+		}, 0)
+	}
+
+}
+
+function getStackType(stack: Stack): StackType {
+	const stackName = stack as string
+	if (!isNaN(parseInt(stackName))) return 'Center'
+	if (stackName.startsWith('Win')) return 'Win'
+	return 'Cycle'
 }
 
 class Move {
 	card: GameCard
 	targetCard: GameCard | null
 	oldStack: Stack
-	newStack: Stack | null
+	newStack: Stack
+	moveType: MoveType
 
-	constructor(card: GameCard, targetCard: GameCard | null, newStack: Stack | null = null) {
+	constructor(card: GameCard, targetCard: GameCard | null, newStack: Stack) {
 		this.card = card
 		this.targetCard = targetCard
 		this.oldStack = card.getStack
 		this.newStack = newStack
+		this.moveType = card.getSuit.getIndex === targetCard?.getSuit.getIndex ?? -1 ? 'Win' : 'Center' 
 	}
 
 	makeMove(board: Board) {
-		this.print(true)
+		if (this.newStack === null) return
+		const targetStack = this.newStack
 		const newBoard = { ...board }
-		const size = newBoard[this.oldStack].length - 1
-		let cardIndex = size
+		const size = newBoard[this.oldStack].length
+		let cardIndex = size - 1
 		while (!this.card.matches(newBoard[this.oldStack][cardIndex])) {
 			cardIndex--
 		}
-		const cardsToMove = [...newBoard[this.oldStack].splice(cardIndex, this.card.getStackType === 'Cycle' ? 1 : size - cardIndex)]
-		for (const card of cardsToMove) {
-			card.isFacedown ? card.flip() : {}
+		const cardsToMove = newBoard[this.oldStack].splice(cardIndex, this.card.getStackType === 'Cycle' ? 1 : size - cardIndex)
+		if (this.card.hasFacedownBelow) {
+			this.card.setFacedownBelow(false)
+			const newTopCard = newBoard[this.oldStack][cardIndex - 1]
+			newTopCard.flip()
 		}
-		newBoard[this.newStack!].push(...cardsToMove)
-		return newBoard
+		newBoard[targetStack].push(...cardsToMove.map((card, i) => {
+			card.setStack(targetStack)
+			card.isFacedown ? card.flip() : {}
+			card.setNothingAbove(i === cardsToMove.length - 1)
+			return card
+		}))
 	}
 
 	undoMove() {}
@@ -443,29 +602,6 @@ class Move {
 
 	setNewStack(newStack: Stack) {
 		this.newStack = newStack
-	}
-}
-
-class MoveNode {
-	card: GameCard
-	newStack: Stack | null
-	target: GameCard | null
-	prev: MoveNode | null
-	next: MoveNode | null
-
-	constructor(card: GameCard, target: GameCard|null=null, newStack: Stack|null=null,
-				prev: MoveNode|null=null, next: MoveNode|null=null) {
-		this.card = card
-		this.newStack = newStack ?? target?.getStack ?? null
-		this.target = target
-		this.prev = prev
-		this.next = next
-	}
-	getPrev() {
-
-	}
-	getNext() {
-
 	}
 }
 
@@ -504,5 +640,5 @@ const testBoard2: [number, number][] = [
 const solitaire = new Game('Game')
 solitaire.dealCards(testBoard2)
 solitaire.printBoard(solitaire.board, true, true)
-solitaire.printBoard()
-solitaire.evaluateBoard()
+solitaire.printBoard(solitaire.board)
+solitaire.evaluateBoard(solitaire.board)

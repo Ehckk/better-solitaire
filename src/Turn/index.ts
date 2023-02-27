@@ -14,22 +14,21 @@ function getStackType(stack: Stack): StackType {
 class Turn {
 	board: Board
 	cards: Card[]
-    criticalCards: Card[] = []
+    criticalCards: Card[]
 	possibleMoves: Map<string, Set<Move>> = new Map<string, Set<Move>>()
 	visited: boolean[][]
 	moveChains: Move[][] = []
     cardstoCheck: Card[] = []
     boardIsWinnable: boolean
 	boardIsWon: boolean
-	turnNumber: number
 
-	constructor(board: Board, turnNumber: number) {
+	constructor(board: Board) {
 		this.board = board
 		this.cards = Object.values(this.board).reduce((prev: Card[], cards) => [...prev, ...cards], [])
-		this.visited = Array(4)
+		this.criticalCards = []
+        this.visited = Array(4)
 		this.boardIsWinnable = false
 		this.boardIsWon = false
-		this.turnNumber = turnNumber
 		for (const suit of suits) {
 			this.visited[suit.getIndex] = new Array(13).fill(false)
 		}
@@ -37,10 +36,11 @@ class Turn {
 
     getMoves() {
         this.criticalCards.push(...this.cards.filter((card) => {
-            if (card.getStackType !== 'Center') return false 
+            if (card.getStackType !== 'Center') return false
             if (card.isFacedown) return false
             return (card.hasFacedownBelow || card.hasBlankBelow)
         }))
+        console.log(this.criticalCards.map((card) => card.getId()))
         for (const critCard of this.criticalCards) {
             this.getMovesForCard(critCard)
         }
@@ -97,7 +97,7 @@ class Turn {
     }
     getWinTarget(card: Card): Card {
         return this.cards.filter(target => {
-            if (target.getSuit !== card.getSuit) return false 
+            if (target.getSuit !== card.getSuit) return false
             if (target.getRank.getValue + 1 !== card.getRank.getValue) return false
             return true
         })[0]
@@ -110,7 +110,7 @@ class Turn {
         }
         const centerTargets = this.getCenterTargets(card)
         for (const target of centerTargets) {
-            const move = new Move(card, target, target.getStack, 'Center') 
+            const move = new Move(card, target, target.getStack, 'Center')
             if (target.hasNothingAbove && target.getStackType === 'Center') {
                 moves.push(move)
             } else {
@@ -124,7 +124,7 @@ class Turn {
     }
     getCenterTargets(card: Card): Card[] {
         return this.cards.filter(target => {
-            if (target.getSuit.getColor === card.getSuit.getColor) return false 
+            if (target.getSuit.getColor === card.getSuit.getColor) return false
             if (target.getRank.getValue - 1 !== card.getRank.getValue) return false
             return true
         })
@@ -156,12 +156,7 @@ class Turn {
         for (const critCard of this.criticalCards) {
             this.moveChains.push(...this.getMoveChainsForCard(critCard))
         }
-        console.log('-------------------')
-        console.log(this.moveChains.map((moveChain) => moveChain.map((move) => {
-            const target = move.targetCard?.getId(true) ?? 'Blank'
-            return `${move.card.getId(true)} (${move.oldStack}) => ${target} (${move.newStack})`
-        }).join(', ')).join('\n'))
-        console.log('-------------------')
+        return this.moveChains
     }
 
     getMoveChainsForCard(card: Card, type: TargetType='Both'): Move[][] {
@@ -171,7 +166,7 @@ class Turn {
             if (possibleMove.targetCard === null || possibleMove.targetCard.hasNothingAbove) {
                 newMoves.push([possibleMove])
                 continue
-            } 
+            }
             const requiredMoves = this.getMoveChainsForCard(possibleMove.targetCard, type=possibleMove.type)
             newMoves.push(...requiredMoves.map((moveChain) => {
                 const lastMove = moveChain[moveChain.length - 1]
@@ -186,30 +181,6 @@ class Turn {
 		return cards.reduce((count, card) => card.isFacedown ? count + 1 : count, 0)
 	}
 
-	printMoveChains(moveChains: Move[][], log: boolean=true) {
-		let fmt = `${moveChains.map((moves) => `${log ? '' : '\t'}${moves.map((move) => {
-			const { card, targetCard, oldStack, newStack } = move
-			return `${card.getId(true)} (${oldStack}) => ${targetCard?.getId(true) ?? 'Blank'} (${newStack})`
-		}).join(', ')}`).join('\n')}`
-		log ? console.log(fmt) : {}
-		return fmt
-	}
-
-	hasPossibleMoves() {
-		return this.moveChains.length > 0
-	}
-
-	// makeMoves() {
-	// 	const newBoard = { ...this.board }
-	// 	const nextMoveChain = this.moveChains.splice(0, 1)[0]
-	// 	this.printMoveChains([nextMoveChain])
-	// 	for (const move of nextMoveChain) {
-	// 		move.makeMove(newBoard)
-	// 		this.updateStack(newBoard, move.oldStack)
-	// 		this.updateStack(newBoard, move.newStack)
-	// 	}
-	// 	return newBoard
-	// }
 
 	// updateStack(board: Board, stack: Stack) {
 	// 	const stackType = getStackType(stack)

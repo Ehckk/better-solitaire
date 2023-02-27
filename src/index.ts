@@ -1,5 +1,8 @@
 import { Card, Stack, StackType, ranks, suits } from './Card'
+import { Move } from './Move'
 import { Board, Turn } from './Turn'
+
+const DEFAULT_TURN_COUNT = 2
 
 class Game {
 	name: string
@@ -14,7 +17,9 @@ class Game {
 
 	newBoard() {
 		return {
-			'Draw': [], 'Discard': [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 'WinS': [], 'WinH': [], 'WinC': [], 'WinD': []
+			'Draw': [], 'Discard': [],
+			1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [],
+			'WinS': [], 'WinH': [], 'WinC': [], 'WinD': []
 		} as Board
 	}
 	createCards(fixedBoard: [number, number][]) {
@@ -47,20 +52,48 @@ class Game {
 		}
 	}
 
-	nextTurn(board: Board, limit: number=15, count: number=1) {
-		const turn = new Turn(board, count)
+	nextTurn(board: Board): Move[][] {
+		const turn = new Turn(board)
 		turn.getMoves()
-		console.log(Array.from(turn.possibleMoves.entries()).filter(([card, moves]) => {
-			return moves.size > 0
-		}).map(([card, moves]) => {
-			return `${card} => ${Array.from(moves.values()).map((move) => {
-				return `${move.targetCard === null ? 'Blank' : move.targetCard.getId()} (${move.newStack})`
-			}).join(', ')
-		}`}).join('\n'))
-		turn.getMoveChains()
-		if (count === limit || !turn.hasPossibleMoves()) return false
-		if (turn.boardIsWinnable) return true // repalce with boardIsWon later
+		// console.log(Array.from(turn.possibleMoves.entries()).filter(([card, moves]) => {
+		// 	return moves.size > 0
+		// }).map(([card, moves]) => {
+		// 	return `${card} => ${Array.from(moves.values()).map((move) => {
+		// 		return `${move.targetCard === null ? 'Blank' : move.targetCard.getId()} (${move.newStack})`
+		// 	}).join(', ')
+		// }`}).join('\n'))
+
+		const moveChains = turn.getMoveChains()
+		console.log('-------------------')
+		for (const moveChain of moveChains) {
+			printMoveChain(moveChain)
+		}
+		console.log('-------------------')
+		return moveChains
 	}
+
+	play(turns: number=DEFAULT_TURN_COUNT, board: Board=this.board): boolean { // replace with game results object
+		if (turns === 0) return false
+		printBoard(board)
+		const moveChains = this.nextTurn(board)
+		for (const moveChain of moveChains) {
+			const newBoard =
+			printMoveChain(moveChain)
+			for (const move of moveChain) {
+				move.makeMove(newBoard)
+			}
+			const valid = this.play(turns - 1, newBoard)
+			if (valid) return true
+		}
+		return false
+	}
+}
+
+function printMoveChain(moveChain: Move[]) {
+	console.log(moveChain.map((move) => {
+		const target = move.targetCard?.getId(true) ?? 'Blank'
+		return `${move.card.getId(true)} (${move.oldStack}) => ${target} (${move.newStack})`
+	}).join(', '))
 }
 
 function printBoard(board: Board, log: boolean=true, stringify: boolean=false) {
@@ -69,7 +102,6 @@ function printBoard(board: Board, log: boolean=true, stringify: boolean=false) {
 		result = `${Object.values(board).reduce((prevCards: [number, number][], cards: Card[]) => {
 			return [...prevCards, ...cards.map((card) => [card.getSuit.getIndex, card.getRank.getValue - 1] as [number, number])]
 		}, [])}`
-		// log ? console.log(result) : {}
 		return result
 	}
 	for (const [stack, cards] of Object.entries(board)) {
@@ -114,6 +146,4 @@ const testBoard2: [number, number][] = [
 
 const solitaire = new Game('Game')
 solitaire.dealCards(testBoard1)
-printBoard(solitaire.board, true, true)
-printBoard(solitaire.board)
-solitaire.nextTurn(solitaire.board)
+solitaire.play()
